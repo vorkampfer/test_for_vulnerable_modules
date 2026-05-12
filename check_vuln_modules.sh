@@ -23,8 +23,9 @@ whiteColour="\e[0;37m\033[1m"
 # This script checks for vulnerable modules in the system and provides recommendations for mitigation. It is designed to be run with root privileges to ensure it can access all necessary system information.
 
 print_help(){
-   echo "Usage: $0 [--verbose|-v] [--help|-h]"
+   echo "Usage: $0 [--verbose|-v] [--json|-j] [--help|-h]"
    echo "  --verbose, -v   Show per-module loaded/blocked status for the full watchlist"
+   echo "  --json, -j      Output machine-readable JSON summary"
    echo "  --help, -h      Show this help message"
 }
 
@@ -36,6 +37,24 @@ is_module_loaded(){
 is_module_blocked(){
    local module="$1"
    modprobe -n -v "$module" 2>/dev/null | grep -q '/bin/false'
+}
+
+get_module_cve(){
+   local module="$1"
+   case "$module" in
+      algif_aead|af_alg)
+         echo "CVE-2026-31431"
+         ;;
+      esp4|esp6|xfrm_user|xfrm_algo|af_key)
+         echo "CVE-PENDING"
+         ;;
+      rxrpc)
+         echo "CVE-PENDING"
+         ;;
+      *)
+         echo "CVE-UNKNOWN"
+         ;;
+   esac
 }
 
 print_module_mitigation(){
@@ -73,11 +92,17 @@ print_module_mitigation(){
 vulnerable=("algif_aead" "af_alg" "esp4" "esp6" "rxrpc" "xfrm_user" "xfrm_algo" "af_key")
 found_vulnerable=0
 verbose=0
+json_mode=0
+json_modules=""
+json_first=1
 
 while [[ $# -gt 0 ]]; do
    case "$1" in
       -v|--verbose)
          verbose=1
+         ;;
+      -j|--json)
+         json_mode=1
          ;;
       -h|--help)
          print_help
@@ -93,29 +118,72 @@ while [[ $# -gt 0 ]]; do
 done
 
 for vuln in "${vulnerable[@]}"; do
+   cve_tag="$(get_module_cve "$vuln")"
+   loaded="no"
+   blocked="no"
+
    if is_module_loaded "$vuln"; then
+      loaded="yes"
+   fi
+
+   if is_module_blocked "$vuln"; then
+      blocked="yes"
+   fi
+
+   if [[ "$json_mode" -eq 1 ]]; then
+      if [[ "$json_first" -eq 0 ]]; then
+         json_modules+=","
+      fi
+      if [[ "$loaded" == "yes" ]]; then
+         loaded_bool="true"
+      else
+         loaded_bool="false"
+      fi
+      if [[ "$blocked" == "yes" ]]; then
+         blocked_bool="true"
+      else
+         blocked_bool="false"
+      fi
+      json_modules+="{\"module\":\"${vuln}\",\"cve\":\"${cve_tag}\",\"loaded\":${loaded_bool},\"blocked\":${blocked_bool}}"
+      json_first=0
+   fi
+
+   if [[ "$loaded" == "yes" ]]; then
       if [[ "$verbose" -eq 1 ]]; then
-         if is_module_blocked "$vuln"; then
-            echo -e "${yellowColour}[*] Verbose:${endColour} module=${vuln} loaded=yes blocked=yes"
+         if [[ "$blocked" == "yes" ]]; then
+            echo -e "${yellowColour}[*] [${cve_tag}]:${endColour} module=${vuln} loaded=yes blocked=yes"
          else
-            echo -e "${yellowColour}[*] Verbose:${endColour} module=${vuln} loaded=yes blocked=no"
+            echo -e "${yellowColour}[*] [${cve_tag}]:${endColour} module=${vuln} loaded=yes blocked=no"
          fi
       fi
 
+      if [[ "$json_mode" -eq 0 ]]; then
          echo -e "${redColour}[!] WARNING:${endColour} ${yellowColour}$vuln${endColour} is loaded and is on the vulnerable watchlist."
-      print_module_mitigation "$vuln"
+         print_module_mitigation "$vuln"
+      fi
       found_vulnerable=1
-   elif [[ "$verbose" -eq 1 ]]; then
-      if is_module_blocked "$vuln"; then
-         echo -e "${yellowColour}[*] Verbose:${endColour} module=${vuln} loaded=no blocked=yes"
+   elif [[ "$verbose" -eq 1 && "$json_mode" -eq 0 ]]; then
+      if [[ "$blocked" == "yes" ]]; then
+         echo -e "${yellowColour}[*] [${cve_tag}]:${endColour} module=${vuln} loaded=no blocked=yes"
       else
-         echo -e "${yellowColour}[*] Verbose:${endColour} module=${vuln} loaded=no blocked=no"
+         echo -e "${yellowColour}[*] [${cve_tag}]:${endColour} module=${vuln} loaded=no blocked=no"
       fi
    fi
 done
 
-if [[ "$found_vulnerable" -eq 0 ]]; then
-   echo -e "${greenColour}[+] All clear:${endColour} No modules from the vulnerable watchlist are currently loaded."
+if [[ "$json_mode" -eq 1 ]]; then
+   if [[ "$found_vulnerable" -eq 0 ]]; then
+      status="all_clear"
+      found_bool="false"
+   else
+      status="risk_detected"
+      found_bool="true"
+   fi
+   printf '{"status":"%s","found_vulnerable":%s,"modules":[%s]}\n' "$status" "$found_bool" "$json_modules"
 else
-   echo -e "${redColour}[-] Risk detected:${endColour} One or more vulnerable watchlist modules are loaded."
+   if [[ "$found_vulnerable" -eq 0 ]]; then
+      echo -e "${greenColour}[+] All clear:${endColour} No modules from the vulnerable watchlist are currently loaded."
+   else
+      echo -e "${redColour}[-] Risk detected:${endColour} One or more vulnerable watchlist modules are loaded."
+   fi
 fi
