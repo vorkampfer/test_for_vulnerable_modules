@@ -6,7 +6,7 @@
 
 ### Example:
 ```
-ᐅ check_for_vuln_modules.sh --verbose
+ᐅ check_vuln_modules.sh --verbose
 [*] Verbose: module=algif_aead loaded=no blocked=yes
 [*] Verbose: module=af_alg loaded=no blocked=no
 [*] Verbose: module=esp4 loaded=no blocked=yes
