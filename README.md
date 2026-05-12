@@ -17,4 +17,23 @@
 [*] Verbose: module=af_key loaded=no blocked=no
 [+] All clear: No modules from the vulnerable watchlist are currently loaded.
 ```
-
+### Example:
+```
+ᐅ check_vuln_modules.sh --json --verbose | jq
+{
+  "status": "all_clear",
+  "found_vulnerable": false,
+  "modules": [
+    {
+      "module": "algif_aead",
+      "cve": "CVE-2026-31431",
+      "loaded": false,
+      "blocked": true
+    },
+    {
+      "module": "af_alg",
+      "cve": "CVE-2026-31431",
+      "loaded": false,
+      "blocked": false
+    },<SNIP>
+```
