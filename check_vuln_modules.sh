@@ -25,8 +25,9 @@ whiteColour="\e[0;37m\033[1m"
 print_help(){
    echo "[?] Note: This script checks for copy_fail, copyfail2_electric_boogaloo, dirtyfrag, fragbleed, fragnesia, and related module vulnerabilities. Kernel checks include CVE-2026-31431, dirtyfrag CVEs (CVE-2026-43284/CVE-2026-43500), and fragnesia CVE-2026-46300. As of now, 7.0.x kernels should be treated as dirtyfrag-affected until official fixed ranges are published (7.0.4 may change this)."
    echo -e "${yellowColour}Usage:${endColour}"
-   echo "Usage: $0 [--verbose|-v] [--json|-j] [--help|-h]"
+   echo "Usage: $0 [--verbose|-v] [--very-verbose|--vvv] [--json|-j] [--help|-h]"
    echo "  --verbose, -v   Show per-module loaded/blocked status for the full watchlist"
+   echo "  --very-verbose, --vvv  Show module status plus install/blacklist rule contents"
    echo "  --json, -j      Output machine-readable JSON summary (modules + kernel CVEs)"
    echo "  --help, -h      Show this help message"
 }
@@ -39,6 +40,28 @@ is_module_loaded(){
 is_module_blocked(){
    local module="$1"
    modprobe -n -v "$module" 2>/dev/null | grep -q '/bin/false'
+}
+
+print_module_rule_contents(){
+   local module="$1"
+   local rules
+   local effective
+
+   rules="$(grep -RhsE "^[[:space:]]*(install|blacklist)[[:space:]]+${module}([[:space:]]|$)" /etc/modprobe.d /usr/lib/modprobe.d /lib/modprobe.d 2>/dev/null | sed -E 's/^[[:space:]]+//')"
+
+   echo -e "${cyanColour}[*] Module rules:${endColour} module=${module}"
+   if [[ -n "$rules" ]]; then
+      while IFS= read -r line; do
+         [[ -n "$line" ]] && echo "    $line"
+      done <<< "$rules"
+   else
+      effective="$(modprobe -n -v "$module" 2>/dev/null)"
+      if echo "$effective" | grep -q '/bin/false'; then
+         echo "    install ${module} /bin/false (effective via modprobe policy)"
+      else
+         echo "    (no install/blacklist rule found in modprobe.d paths)"
+      fi
+   fi
 }
 
 get_module_cve(){
@@ -218,6 +241,7 @@ vulnerable=("algif_aead" "af_alg" "esp4" "esp6" "rxrpc" "xfrm_user" "xfrm_algo" 
 found_vulnerable=0
 found_kernel_cve=0
 verbose=0
+very_verbose=0
 json_mode=0
 json_modules=""
 json_first=1
@@ -230,6 +254,10 @@ dirtyfrag_evidence_affected=0
 while [[ $# -gt 0 ]]; do
    case "$1" in
       -v|--verbose)
+         verbose=1
+         ;;
+      --very-verbose|--vvv)
+         very_verbose=1
          verbose=1
          ;;
       -j|--json)
@@ -278,6 +306,10 @@ for vuln in "${vulnerable[@]}"; do
       fi
       json_modules+="{\"module\":\"${vuln}\",\"family\":\"${family_tag}\",\"cve\":\"${cve_tag}\",\"loaded\":${loaded_bool},\"blocked\":${blocked_bool}}"
       json_first=0
+   fi
+
+   if [[ "$very_verbose" -eq 1 && "$json_mode" -eq 0 ]]; then
+      print_module_rule_contents "$vuln"
    fi
 
    if [[ "$loaded" == "yes" ]]; then
