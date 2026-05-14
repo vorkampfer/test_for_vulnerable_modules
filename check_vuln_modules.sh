@@ -1,4 +1,4 @@
-#!/usr/bin/bash
+#!/usr/bin/env bash
 
 
 function ctrl_c(){
@@ -23,9 +23,11 @@ whiteColour="\e[0;37m\033[1m"
 # This script checks for vulnerable modules in the system and provides recommendations for mitigation. It is designed to be run with root privileges to ensure it can access all necessary system information.
 
 print_help(){
+   echo "[?] Note: This script checks for copy_fail, copyfail2_electric_boogaloo, dirtyfrag, fragbleed, fragnesia, and related module vulnerabilities. Kernel checks include CVE-2026-31431, dirtyfrag CVEs (CVE-2026-43284/CVE-2026-43500), and fragnesia CVE-2026-46300. As of now, 7.0.x kernels should be treated as dirtyfrag-affected until official fixed ranges are published (7.0.4 may change this)."
+   echo -e "${yellowColour}Usage:${endColour}"
    echo "Usage: $0 [--verbose|-v] [--json|-j] [--help|-h]"
    echo "  --verbose, -v   Show per-module loaded/blocked status for the full watchlist"
-   echo "  --json, -j      Output machine-readable JSON summary"
+   echo "  --json, -j      Output machine-readable JSON summary (modules + kernel CVEs)"
    echo "  --help, -h      Show this help message"
 }
 
@@ -45,16 +47,139 @@ get_module_cve(){
       algif_aead|af_alg)
          echo "CVE-2026-31431"
          ;;
-      esp4|esp6|xfrm_user|xfrm_algo|af_key)
-         echo "CVE-PENDING"
+      esp4|esp6)
+         echo "CVE-PENDING-FRAGBLEED"
          ;;
       rxrpc)
-         echo "CVE-PENDING"
+         echo "CVE-2026-43284,CVE-2026-43500"
+         ;;
+      xfrm_user|xfrm_algo|af_key)
+         echo "CVE-PENDING-COPYFAIL2"
          ;;
       *)
          echo "CVE-UNKNOWN"
          ;;
    esac
+}
+
+get_module_family(){
+   local module="$1"
+   case "$module" in
+      algif_aead|af_alg)
+         echo "copy_fail"
+         ;;
+      rxrpc)
+         echo "dirtyfrag"
+         ;;
+      esp4|esp6)
+         echo "fragbleed"
+         ;;
+      xfrm_user|xfrm_algo|af_key)
+         echo "copyfail2_electric_boogaloo"
+         ;;
+      *)
+         echo "misc"
+         ;;
+   esac
+}
+
+normalize_kernel_version(){
+   local raw="$1"
+   local parsed
+   local major
+   local minor
+   local patch
+
+   parsed="$(echo "$raw" | sed -E 's/^([0-9]+\.[0-9]+(\.[0-9]+)?).*/\1/')"
+   if [[ -z "$parsed" || "$parsed" == "$raw" && ! "$raw" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)? ]]; then
+      echo "0.0.0"
+      return
+   fi
+
+   IFS='.' read -r major minor patch <<< "$parsed"
+   patch="${patch:-0}"
+   echo "${major}.${minor}.${patch}"
+}
+
+ver_ge(){
+   local a="$1"
+   local b="$2"
+   [[ "$(printf '%s\n%s\n' "$a" "$b" | sort -V | head -n1)" == "$b" ]]
+}
+
+ver_lt(){
+   local a="$1"
+   local b="$2"
+   [[ "$a" != "$b" && "$(printf '%s\n%s\n' "$a" "$b" | sort -V | head -n1)" == "$a" ]]
+}
+
+is_cve_2026_31431_affected(){
+   local version="$1"
+   local major_minor="$(echo "$version" | cut -d'.' -f1,2)"
+
+   # Source: MITRE CVE JSON semver branches.
+   # affected from 4.14+, fixed on stable branches listed below, and 7.0+ marked fixed.
+   if ver_lt "$version" "4.14.0"; then
+      return 1
+   fi
+
+   if ver_ge "$version" "7.0.0"; then
+      return 1
+   fi
+
+   case "$major_minor" in
+      5.10)
+         ver_lt "$version" "5.10.254"
+         return
+         ;;
+      5.15)
+         ver_lt "$version" "5.15.204"
+         return
+         ;;
+      6.1)
+         ver_lt "$version" "6.1.170"
+         return
+         ;;
+      6.6)
+         ver_lt "$version" "6.6.137"
+         return
+         ;;
+      6.12)
+         ver_lt "$version" "6.12.85"
+         return
+         ;;
+      6.18)
+         ver_lt "$version" "6.18.22"
+         return
+         ;;
+      6.19)
+         ver_lt "$version" "6.19.12"
+         return
+         ;;
+      *)
+         return 0
+         ;;
+   esac
+}
+
+is_dirtyfrag_evidence_affected(){
+   local kernel_release="$1"
+   local version="$2"
+
+   # Local evidence override until official semver ranges are published.
+   # Confirmed exploitable by local testing on 7.0.3-arch1-2 pre-mitigation.
+   if [[ "$kernel_release" == "7.0.3-arch1-2" ]]; then
+      return 0
+   fi
+
+   # Conservative Arch policy to avoid false sense of safety while ranges are unpublished.
+   if [[ "$kernel_release" == 7.0.*-arch* ]]; then
+      return 0
+   fi
+
+   # Placeholder for future official ranges:
+   # if ver_ge "$version" "X.Y.Z" && ver_lt "$version" "A.B.C"; then return 0; fi
+   return 1
 }
 
 print_module_mitigation(){
@@ -91,10 +216,16 @@ print_module_mitigation(){
 
 vulnerable=("algif_aead" "af_alg" "esp4" "esp6" "rxrpc" "xfrm_user" "xfrm_algo" "af_key")
 found_vulnerable=0
+found_kernel_cve=0
 verbose=0
 json_mode=0
 json_modules=""
 json_first=1
+json_kernel_cves=""
+json_kernel_first=1
+kernel_release_raw="$(uname -r)"
+kernel_version="$(normalize_kernel_version "$kernel_release_raw")"
+dirtyfrag_evidence_affected=0
 
 while [[ $# -gt 0 ]]; do
    case "$1" in
@@ -119,6 +250,7 @@ done
 
 for vuln in "${vulnerable[@]}"; do
    cve_tag="$(get_module_cve "$vuln")"
+   family_tag="$(get_module_family "$vuln")"
    loaded="no"
    blocked="no"
 
@@ -144,46 +276,108 @@ for vuln in "${vulnerable[@]}"; do
       else
          blocked_bool="false"
       fi
-      json_modules+="{\"module\":\"${vuln}\",\"cve\":\"${cve_tag}\",\"loaded\":${loaded_bool},\"blocked\":${blocked_bool}}"
+      json_modules+="{\"module\":\"${vuln}\",\"family\":\"${family_tag}\",\"cve\":\"${cve_tag}\",\"loaded\":${loaded_bool},\"blocked\":${blocked_bool}}"
       json_first=0
    fi
 
    if [[ "$loaded" == "yes" ]]; then
       if [[ "$verbose" -eq 1 ]]; then
          if [[ "$blocked" == "yes" ]]; then
-            echo -e "${yellowColour}[*] [${cve_tag}]:${endColour} module=${vuln} loaded=yes blocked=yes"
+            echo -e "${yellowColour}[*] [${cve_tag}]:${endColour} family=${family_tag} module=${vuln} loaded=yes blocked=yes"
          else
-            echo -e "${yellowColour}[*] [${cve_tag}]:${endColour} module=${vuln} loaded=yes blocked=no"
+            echo -e "${yellowColour}[*] [${cve_tag}]:${endColour} family=${family_tag} module=${vuln} loaded=yes blocked=no"
          fi
       fi
 
       if [[ "$json_mode" -eq 0 ]]; then
-         echo -e "${redColour}[!] WARNING:${endColour} ${yellowColour}$vuln${endColour} is loaded and is on the vulnerable watchlist."
+         echo -e "${redColour}[!] WARNING:${endColour} family=${yellowColour}${family_tag}${endColour} module=${yellowColour}${vuln}${endColour} is loaded and on the vulnerable watchlist."
          print_module_mitigation "$vuln"
       fi
       found_vulnerable=1
    elif [[ "$verbose" -eq 1 && "$json_mode" -eq 0 ]]; then
       if [[ "$blocked" == "yes" ]]; then
-         echo -e "${yellowColour}[*] [${cve_tag}]:${endColour} module=${vuln} loaded=no blocked=yes"
+         echo -e "${yellowColour}[*] [${cve_tag}]:${endColour} family=${family_tag} module=${vuln} loaded=no blocked=yes"
       else
-         echo -e "${yellowColour}[*] [${cve_tag}]:${endColour} module=${vuln} loaded=no blocked=no"
+         echo -e "${yellowColour}[*] [${cve_tag}]:${endColour} family=${family_tag} module=${vuln} loaded=no blocked=no"
       fi
    fi
 done
 
+if is_cve_2026_31431_affected "$kernel_version"; then
+   found_kernel_cve=1
+   if [[ "$json_mode" -eq 1 ]]; then
+      json_kernel_cves+="{\"cve\":\"CVE-2026-31431\",\"family\":\"copy_fail\",\"affected\":true,\"kernel\":\"${kernel_version}\",\"fixed_branches\":[\"5.10.254\",\"5.15.204\",\"6.1.170\",\"6.6.137\",\"6.12.85\",\"6.18.22\",\"6.19.12\",\"7.0+\"]}"
+      json_kernel_first=0
+   else
+      echo -e "${redColour}[!] Kernel CVE match:${endColour} ${yellowColour}CVE-2026-31431${endColour} applies to kernel ${yellowColour}${kernel_version}${endColour} (family=copy_fail)."
+      echo -e "${blueColour}[*] Fixed versions:${endColour} 5.10.254, 5.15.204, 6.1.170, 6.6.137, 6.12.85, 6.18.22, 6.19.12, 7.0+"
+   fi
+elif [[ "$json_mode" -eq 0 ]]; then
+   echo -e "${greenColour}[+] Kernel check:${endColour} ${yellowColour}${kernel_version}${endColour} is not matched as affected by CVE-2026-31431."
+fi
+
+if is_dirtyfrag_evidence_affected "$kernel_release_raw" "$kernel_version"; then
+   found_kernel_cve=1
+   dirtyfrag_evidence_affected=1
+   if [[ "$json_mode" -eq 1 ]]; then
+      if [[ "$json_kernel_first" -eq 0 ]]; then
+         json_kernel_cves+="," 
+      fi
+      json_kernel_cves+="{\"cve\":\"CVE-2026-43284,CVE-2026-43500\",\"family\":\"dirtyfrag\",\"affected\":true,\"kernel\":\"${kernel_version}\",\"kernel_release\":\"${kernel_release_raw}\",\"source\":\"evidence_override\",\"note\":\"Known exploitable build(s) detected; treat as vulnerable until official semver ranges are published\"}"
+      json_kernel_first=0
+   else
+      echo -e "${redColour}[!] Kernel evidence match:${endColour} ${yellowColour}dirtyfrag${endColour} treated as affected on ${yellowColour}${kernel_release_raw}${endColour} (source=evidence_override)."
+      echo -e "${yellowColour}[*] Dirtyfrag CVEs:${endColour} CVE-2026-43284, CVE-2026-43500"
+      echo -e "${yellowColour}[*] Advisory:${endColour} Do not assume latest kernel is safe for dirtyfrag until official fixed ranges are published."
+   fi
+fi
+
 if [[ "$json_mode" -eq 1 ]]; then
-   if [[ "$found_vulnerable" -eq 0 ]]; then
+   if [[ "$dirtyfrag_evidence_affected" -eq 0 ]]; then
+      if [[ "$json_kernel_first" -eq 0 ]]; then
+         json_kernel_cves+=","
+      fi
+      json_kernel_cves+="{\"cve\":\"CVE-2026-43284,CVE-2026-43500\",\"family\":\"dirtyfrag\",\"affected\":null,\"kernel\":\"${kernel_version}\",\"source\":\"unpublished_range\",\"note\":\"CVE IDs are known; public semver affected ranges are not published yet\"}"
+      json_kernel_first=0
+   fi
+   if [[ "$json_kernel_first" -eq 0 ]]; then
+      json_kernel_cves+=","
+   fi
+   json_kernel_cves+="{\"cve\":\"CVE-PENDING-FRAGBLEED\",\"family\":\"fragbleed\",\"affected\":null,\"kernel\":\"${kernel_version}\",\"source\":\"unpublished_range\",\"note\":\"Public semver affected ranges are not published yet\"}"
+   json_kernel_cves+=",{\"cve\":\"CVE-2026-46300\",\"family\":\"fragnesia\",\"affected\":null,\"kernel\":\"${kernel_version}\",\"source\":\"unpublished_range\",\"note\":\"CVE ID is known; public semver affected ranges are not published yet\"}"
+   json_kernel_cves+=",{\"cve\":\"CVE-PENDING-COPYFAIL2\",\"family\":\"copyfail2_electric_boogaloo\",\"affected\":null,\"kernel\":\"${kernel_version}\",\"note\":\"Public semver affected ranges are not published yet\"}"
+else
+   echo -e "${blueColour}[*] Kernel release:${endColour} raw=${kernel_release_raw} normalized=${kernel_version}"
+   if [[ "$dirtyfrag_evidence_affected" -eq 0 ]]; then
+      echo -e "${yellowColour}[*] Pending kernel advisories:${endColour} dirtyfrag (CVE-2026-43284/CVE-2026-43500), fragbleed, fragnesia (CVE-2026-46300), copyfail2_electric_boogaloo (semver ranges not published yet)."
+   else
+      echo -e "${yellowColour}[*] Pending kernel advisories:${endColour} fragbleed, fragnesia (CVE-2026-46300), copyfail2_electric_boogaloo (semver ranges not published yet)."
+   fi
+fi
+
+if [[ "$json_mode" -eq 1 ]]; then
+   if [[ "$found_vulnerable" -eq 0 && "$found_kernel_cve" -eq 0 ]]; then
       status="all_clear"
-      found_bool="false"
+      risk_bool="false"
    else
       status="risk_detected"
-      found_bool="true"
+      risk_bool="true"
    fi
-   printf '{"status":"%s","found_vulnerable":%s,"modules":[%s]}\n' "$status" "$found_bool" "$json_modules"
-else
-   if [[ "$found_vulnerable" -eq 0 ]]; then
-      echo -e "${greenColour}[+] All clear:${endColour} No modules from the vulnerable watchlist are currently loaded."
+   if [[ "$found_vulnerable" -eq 1 ]]; then
+      found_modules_bool="true"
    else
-      echo -e "${redColour}[-] Risk detected:${endColour} One or more vulnerable watchlist modules are loaded."
+      found_modules_bool="false"
+   fi
+   if [[ "$found_kernel_cve" -eq 1 ]]; then
+      kernel_bool="true"
+   else
+      kernel_bool="false"
+   fi
+   printf '{"status":"%s","risk_detected":%s,"found_vulnerable":%s,"found_kernel_cve":%s,"kernel_release":"%s","kernel_version":"%s","modules":[%s],"kernel_cves":[%s]}\n' "$status" "$risk_bool" "$found_modules_bool" "$kernel_bool" "$kernel_release_raw" "$kernel_version" "$json_modules" "$json_kernel_cves"
+else
+   if [[ "$found_vulnerable" -eq 0 && "$found_kernel_cve" -eq 0 ]]; then
+      echo -e "${greenColour}[+] All clear:${endColour} No loaded watchlist modules and no matched known kernel CVEs."
+   else
+      echo -e "${redColour}[-] Risk detected:${endColour} One or more watchlist module or kernel CVE checks indicate risk."
    fi
 fi
