@@ -23,7 +23,7 @@ whiteColour="\e[0;37m\033[1m"
 # This script checks for vulnerable modules in the system and provides recommendations for mitigation. It is designed to be run with root privileges to ensure it can access all necessary system information.
 
 print_help(){
-   echo "[?] Note: This script checks for copy_fail, copyfail2_electric_boogaloo, dirtyfrag, fragbleed, fragnesia, and related module vulnerabilities. Kernel checks include CVE-2026-31431, dirtyfrag CVEs (CVE-2026-43284/CVE-2026-43500), and fragnesia CVE-2026-46300. As of now, 7.0.x kernels should be treated as dirtyfrag-affected until official fixed ranges are published (7.0.4 may change this)."
+   echo "[?] Note: This script checks for copy_fail, copyfail2_electric_boogaloo, dirtyfrag, fragnesia, and related module vulnerabilities. ESP/XFRM module checks are shown as pending advisory status when no verified CVE naming is available. Kernel checks include CVE-2026-31431, dirtyfrag CVEs (CVE-2026-43284/CVE-2026-43500), and fragnesia CVE-2026-46300. As of now, 7.0.x kernels should be treated as dirtyfrag-affected until official fixed ranges are published (7.0.4 may change this)."
    echo -e "${yellowColour}Usage:${endColour}"
    echo "Usage: $0 [--verbose|-v] [--very-verbose|--vvv] [--json|-j] [--help|-h]"
    echo "  --verbose, -v   Show per-module loaded/blocked status for the full watchlist"
@@ -71,7 +71,7 @@ get_module_cve(){
          echo "CVE-2026-31431"
          ;;
       esp4|esp6)
-         echo "CVE-PENDING-FRAGBLEED"
+         echo "CVE-PENDING-ESP-XFRM"
          ;;
       rxrpc)
          echo "CVE-2026-43284,CVE-2026-43500"
@@ -95,7 +95,7 @@ get_module_family(){
          echo "dirtyfrag"
          ;;
       esp4|esp6)
-         echo "fragbleed"
+         echo "esp_xfrm_pending"
          ;;
       xfrm_user|xfrm_algo|af_key)
          echo "copyfail2_electric_boogaloo"
@@ -375,15 +375,15 @@ if [[ "$json_mode" -eq 1 ]]; then
    if [[ "$json_kernel_first" -eq 0 ]]; then
       json_kernel_cves+=","
    fi
-   json_kernel_cves+="{\"cve\":\"CVE-PENDING-FRAGBLEED\",\"family\":\"fragbleed\",\"affected\":null,\"kernel\":\"${kernel_version}\",\"source\":\"unpublished_range\",\"note\":\"Public semver affected ranges are not published yet\"}"
+   json_kernel_cves+="{\"cve\":\"CVE-PENDING-ESP-XFRM\",\"family\":\"esp_xfrm_pending\",\"affected\":null,\"kernel\":\"${kernel_version}\",\"source\":\"unpublished_range\",\"note\":\"No verified public CVE naming/source for this advisory label yet\"}"
    json_kernel_cves+=",{\"cve\":\"CVE-2026-46300\",\"family\":\"fragnesia\",\"affected\":null,\"kernel\":\"${kernel_version}\",\"source\":\"unpublished_range\",\"note\":\"CVE ID is known; public semver affected ranges are not published yet\"}"
    json_kernel_cves+=",{\"cve\":\"CVE-PENDING-COPYFAIL2\",\"family\":\"copyfail2_electric_boogaloo\",\"affected\":null,\"kernel\":\"${kernel_version}\",\"note\":\"Public semver affected ranges are not published yet\"}"
 else
    echo -e "${blueColour}[*] Kernel release:${endColour} raw=${kernel_release_raw} normalized=${kernel_version}"
    if [[ "$dirtyfrag_evidence_affected" -eq 0 ]]; then
-      echo -e "${yellowColour}[*] Pending kernel advisories:${endColour} dirtyfrag (CVE-2026-43284/CVE-2026-43500), fragbleed, fragnesia (CVE-2026-46300), copyfail2_electric_boogaloo (semver ranges not published yet)."
+      echo -e "${yellowColour}[*] Pending kernel advisories:${endColour} dirtyfrag (CVE-2026-43284/CVE-2026-43500), ESP/XFRM pending advisory (unverified CVE naming), fragnesia (CVE-2026-46300), copyfail2_electric_boogaloo (semver ranges not published yet)."
    else
-      echo -e "${yellowColour}[*] Pending kernel advisories:${endColour} fragbleed, fragnesia (CVE-2026-46300), copyfail2_electric_boogaloo (semver ranges not published yet)."
+      echo -e "${yellowColour}[*] Pending kernel advisories:${endColour} ESP/XFRM pending advisory (unverified CVE naming), fragnesia (CVE-2026-46300), copyfail2_electric_boogaloo (semver ranges not published yet)."
    fi
 fi
 
